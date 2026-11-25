@@ -1,0 +1,49 @@
+#!/bin/zsh
+# Post-install script for PowerSaver.pkg: registers and starts the user LaunchAgent.
+
+CONSOLE_USER="$(stat -f '%Su' /dev/console 2>/dev/null || true)"
+if [[ -z "$CONSOLE_USER" || "$CONSOLE_USER" == "root" ]]; then
+  exit 0
+fi
+
+USER_HOME="$(dscl . -read "/Users/${CONSOLE_USER}" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+[[ -z "$USER_HOME" ]] && USER_HOME="/Users/${CONSOLE_USER}"
+USER_UID="$(id -u "$CONSOLE_USER" 2>/dev/null || true)"
+[[ -z "$USER_UID" ]] && exit 0
+
+LAUNCH_AGENTS_DIR="${USER_HOME}/Library/LaunchAgents"
+PLIST_DEST="${LAUNCH_AGENTS_DIR}/com.rafli.powersaver.plist"
+EXECUTABLE="/Applications/PowerSaver.app/Contents/MacOS/PowerSaver"
+
+mkdir -p "$LAUNCH_AGENTS_DIR"
+cat > "$PLIST_DEST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.rafli.powersaver</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${EXECUTABLE}</string>
+    </array>
+    <key>LimitLoadToSessionType</key>
+    <array>
+        <string>Aqua</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>
+EOF
+
+chown "${CONSOLE_USER}:staff" "$LAUNCH_AGENTS_DIR" "$PLIST_DEST" 2>/dev/null || chown "$CONSOLE_USER" "$PLIST_DEST"
+chmod 644 "$PLIST_DEST"
+
+launchctl bootout "gui/${USER_UID}/com.rafli.powersaver" 2>/dev/null || true
+sleep 0.2
+launchctl bootstrap "gui/${USER_UID}" "$PLIST_DEST" 2>/dev/null || true
+
+exit 0
