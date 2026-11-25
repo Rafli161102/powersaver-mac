@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Restores background agents and utility apps previously suspended by power-saver.sh.
+# Restores LaunchAgents and applications previously suspended by PowerSaver.
 
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 UID_NUM="$(id -u)"
@@ -30,6 +30,10 @@ if [[ -f "$STOPPED_FILE" ]]; then
     case "$entry" in
       agent:*)
         start_agent "${entry#agent:}"
+        ;;
+      apppath:*)
+        app_path="${entry#apppath:}"
+        [[ -d "$app_path" ]] && open -g -a "$app_path" 2>/dev/null || true
         ;;
       app:*)
         open_app_if_found "${entry#app:}"

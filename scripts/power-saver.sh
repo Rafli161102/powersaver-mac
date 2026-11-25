@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Stops unused background agents and helper processes to maximize battery life.
+# Suspends configured user LaunchAgents, common third-party updaters, and idle background helpers.
 # Usage: power-saver.sh [--extreme]
 
 export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
@@ -8,6 +8,7 @@ EXTREME=0
 [[ "${1:-}" == "--extreme" ]] && EXTREME=1
 
 STATE_DIR="${HOME}/Library/Application Support/PowerSaver"
+CONFIG_FILE="${STATE_DIR}/config.json"
 STOPPED_FILE="${STATE_DIR}/stopped_items.txt"
 mkdir -p "$STATE_DIR"
 touch "$STOPPED_FILE"
@@ -19,6 +20,7 @@ record_stopped() {
 
 stop_agent() {
   local label="$1"
+  [[ -z "$label" ]] && return 0
   if launchctl list | awk '{print $3}' | grep -Fxq "$label"; then
     record_stopped "agent:${label}"
   fi
@@ -28,46 +30,79 @@ stop_agent() {
 
 stop_proc() {
   local proc="$1"
-  local record_app="${2:-}"
+  [[ -z "$proc" ]] && return 0
   if pgrep -u "$UID_NUM" -x "$proc" >/dev/null 2>&1; then
-    [[ -n "$record_app" ]] && record_stopped "app:${record_app}"
     pkill -TERM -u "$UID_NUM" -x "$proc" 2>/dev/null || true
   fi
 }
+
+read_config_field() {
+  local expr="$1"
+  [[ -f "$CONFIG_FILE" ]] || return 0
+  /usr/bin/osascript -l JavaScript -e "
+    ObjC.import('Foundation');
+    const data = \$.NSData.dataWithContentsOfFile('${CONFIG_FILE}');
+    if (data) {
+      const str = \$.NSString.alloc.initWithDataEncoding(data, \$.NSUTF8StringEncoding).js;
+      const cfg = JSON.parse(str);
+      ${expr}
+    }
+  " 2>/dev/null || true
+}
+
+AUTO_UPDATERS="$(read_config_field 'console.log(cfg.autoSuspendCommonUpdaters !== false ? "1" : "0")')"
+AUTO_HELPERS="$(read_config_field 'console.log(cfg.autoCleanCommonHelpers !== false ? "1" : "0")')"
+[[ -z "$AUTO_UPDATERS" ]] && AUTO_UPDATERS="1"
+[[ -z "$AUTO_HELPERS" ]] && AUTO_HELPERS="1"
 
 echo "==> Ensuring App Nap is active and disabling Chrome background mode..."
 defaults delete NSGlobalDomain NSAppSleepDisabled 2>/dev/null || true
 defaults write com.google.Chrome BackgroundModeEnabled -bool false 2>/dev/null || true
 
-echo "==> Suspending unused background updaters and user agents..."
-for label in \
-  com.google.GoogleUpdater.wake \
-  com.google.keystone.agent \
-  com.google.keystone.xpcservice \
-  com.valvesoftware.steamclean \
-  ai.hermes.gateway
-do
-  stop_agent "$label"
-done
-
-for proc in figma_agent FigmaAgent LyricsXHelper ollama Ollama llama-server iwallpaper steam_osx Steam; do
-  stop_proc "$proc"
-done
-
-# Clean up Adobe background helpers only when no primary Adobe app is running
-if ! pgrep -u "$UID_NUM" -f "Adobe (Premiere|After Effects|Photoshop|Illustrator|Lightroom)" >/dev/null 2>&1; then
-  for adobe_proc in CCXProcess "Core Sync" AdobeIPCBroker "Adobe Crash Processor" CCLibrary; do
-    stop_proc "$adobe_proc"
+if [[ "$AUTO_UPDATERS" == "1" ]]; then
+  echo "==> Suspending common third-party background updaters..."
+  for label in \
+    com.google.GoogleUpdater.wake \
+    com.google.keystone.agent \
+    com.google.keystone.xpcservice \
+    com.valvesoftware.steamclean \
+    com.adobe.GC.Invoker-1.0 \
+    com.adobe.AdobeCreativeCloud \
+    com.dropbox.DropboxMacUpdate.agent
+  do
+    stop_agent "$label"
   done
 fi
 
+echo "==> Suspending user-configured LaunchAgents..."
+USER_AGENTS="$(read_config_field 'if (Array.isArray(cfg.suspendAgentLabels)) cfg.suspendAgentLabels.forEach(l => console.log(l))')"
+if [[ -n "$USER_AGENTS" ]]; then
+  while IFS= read -r label; do
+    stop_agent "$label"
+  done <<< "$USER_AGENTS"
+fi
+
+if [[ "$AUTO_HELPERS" == "1" ]]; then
+  echo "==> Cleaning idle background helpers..."
+  for proc in figma_agent FigmaAgent LyricsXHelper ollama llama-server steam_osx DropboxHelper; do
+    stop_proc "$proc"
+  done
+
+  if ! pgrep -u "$UID_NUM" -f "Adobe (Premiere|After Effects|Photoshop|Illustrator|Lightroom)" >/dev/null 2>&1; then
+    for adobe_proc in CCXProcess "Core Sync" AdobeIPCBroker "Adobe Crash Processor" CCLibrary; do
+      stop_proc "$adobe_proc"
+    done
+  fi
+fi
+
 if (( EXTREME == 1 )); then
-  echo "==> Extreme mode: closing menu bar utilities..."
-  stop_proc "Atoll" "Atoll.app"
-  stop_proc "Macs Fan Control" "Macs Fan Control.app"
-  stop_proc "Rectangle" "Rectangle.app"
-  stop_proc "Maccy" "Maccy.app"
-  pkill -TERM -u "$UID_NUM" -f "Atoll\.app/Contents/Resources/mediaremote-adapter\.pl" 2>/dev/null || true
+  echo "==> Extreme mode: terminating user-configured extreme apps (CLI fallback)..."
+  EXTREME_APPS="$(read_config_field 'if (Array.isArray(cfg.extremeModeApps)) cfg.extremeModeApps.forEach(a => console.log(a))')"
+  if [[ -n "$EXTREME_APPS" ]]; then
+    while IFS= read -r app_name; do
+      stop_proc "$app_name"
+    done <<< "$EXTREME_APPS"
+  fi
 fi
 
 echo "==> Done. Top user CPU processes:"
